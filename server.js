@@ -1,8 +1,11 @@
 const express = require('express');
 const app = express();
 const socket = require('socket.io');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const PORT = process.env.PORT || 5000;
+
+puppeteer.use(StealthPlugin());
 
 const server = app.listen(PORT, () => {
   console.log('server online');
@@ -35,7 +38,7 @@ io.on('connection', async (socket) => {
 
 async function executeAuto(data, url) {
   const time = new Date().toLocaleString();
-  let pickupOp = false;
+  let pickupOp = true;
   const browser = await puppeteer.launch({
     headless: true,
     args: [
@@ -85,9 +88,6 @@ async function executeAuto(data, url) {
     ];
 
     await page.setRequestInterception(true);
-    await page.setUserAgent(
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/78.0.3904.108 Safari/537.36'
-    );
     page.on('request', (request) => {
       const requestUrl = request._url.split('?')[0].split('#')[0];
       if (
@@ -102,40 +102,31 @@ async function executeAuto(data, url) {
 
     await page.goto(url);
 
-    await page.waitForSelector('[data-test="flexible-fulfillment"]');
+    await page.waitForSelector('[data-test="storeFulfillmentAggregator"]');
 
-    const orderBtn = await page.$$(
-      '.Button__ButtonWithStyles-y45r97-0.styles__StyledButton-sc-1f2lsll-0.eLsRDh.iyUhph'
+    await page.waitForSelector(
+      '.Link__StyledLink-zyll5o-0.ggRyRP.h-text-sm.h-text-underline'
+    );
+    await page.click(
+      '.Link__StyledLink-zyll5o-0.ggRyRP.h-text-sm.h-text-underline'
     );
 
-    if (orderBtn.length === 0) {
-      io.emit('result', { msg: `${time}: Not Found: ${url}` });
-      await browser.close();
-      autoScan = true;
-      return;
-    } else {
-      for (let i = 0; i < orderBtn.length; i++) {
-        let text = await page.evaluate((el) => el.innerText, orderBtn[i]);
-        if (text === 'Pick up here') {
-          await orderBtn[i].click();
-          pickupOp = true;
-          break;
-        } else {
-          pickupOp = true;
-          await orderBtn[orderBtn.length - 1].click();
-          break;
-        }
-      }
-    }
+    await page.waitForSelector('[data-test="storeSearchLink"]');
+    await page.click('[data-test="storeSearchLink"]');
+    const location = await page.$('[data-test="fiatsLocationInput"]');
+    await location.click({ clickCount: 3 });
+    await location.type(`${data.zipcode}`);
+    await page.click('[data-test="fiatsUpdateLocationSubmitButton"]');
+    await sleep(1000);
+    const availableItems = await page.$$('[data-test="pickUpHereFIATS"]');
 
-    await sleep(500);
-    const errorBtn = await page.$('[data-test="errorContent-okButton"]');
-    if (errorBtn && errorBtn.textContent !== '') {
+    if (availableItems.length === 0) {
       io.emit('result', { msg: `${time}: Not Found: ${url}` });
       await browser.close();
       autoScan = true;
       return;
     }
+    await availableItems[availableItems.length - 1].click();
 
     await page.waitForSelector('[data-test="addToCartModal"]');
 
@@ -149,9 +140,14 @@ async function executeAuto(data, url) {
 
     await page.click('[data-test="addToCartModalViewCartCheckout"]');
 
+    await page.waitForSelector('[id="checkout-spinner"]', {
+      hidden: true,
+    });
+    // Go to checkout
     await page.waitForSelector('[data-test="checkout-button"]');
     await page.click('[data-test="checkout-button"]');
 
+    // Login
     await page.waitForSelector('[id="username"]', { visible: true });
     await page.focus('[id="username"]');
     await page.keyboard.type(data.email);
@@ -166,37 +162,34 @@ async function executeAuto(data, url) {
     });
 
     if (pickupOp) {
+      // Check out
       await page.waitForSelector('[id="creditCardInput-cvv"]');
       await page.type('[id="creditCardInput-cvv"]', `${data.ccv}`);
       await page.waitForSelector('[data-test="placeOrderButton"]');
       await page.click('[data-test="placeOrderButton"]');
     } else {
-      await page.waitForSelector('[data-test="payment-credit-card-section"]', {
-        visible: true,
-      });
-
-      const addNewCard = await page.$(
-        '[data-test="add-new-credit-card-button"]'
-      );
-
-      if (addNewCard && addNewCard.textContent !== '') {
-        await page.waitForSelector('[id="creditCardInput-cardNumber"]');
-        await page.type('[id="creditCardInput-cardNumber"]', `${data.cardNum}`);
-        await page.click('[data-test="verify-card-button"]');
-        await page.waitForSelector('[id="creditCardInput-cvv"]');
-        await page.type('[id="creditCardInput-cvv"]', `${data.ccv}`);
-      }
-
-      await page.click('[data-test="save-and-continue-button"]');
-
-      await page.waitForSelector('[id="checkout-spinner"]', {
-        hidden: true,
-      });
-      await page.waitForSelector('[data-test="placeOrderButton"]');
-      await page.click('[data-test="placeOrderButton"]');
+      // await page.waitForSelector('[data-test="payment-credit-card-section"]', {
+      //   visible: true,
+      // });
+      // const addNewCard = await page.$(
+      //   '[data-test="add-new-credit-card-button"]'
+      // );
+      // if (addNewCard && addNewCard.textContent !== '') {
+      //   await page.waitForSelector('[id="creditCardInput-cardNumber"]');
+      //   await page.type('[id="creditCardInput-cardNumber"]', `${data.cardNum}`);
+      //   await page.click('[data-test="verify-card-button"]');
+      //   await page.waitForSelector('[id="creditCardInput-cvv"]');
+      //   await page.type('[id="creditCardInput-cvv"]', `${data.ccv}`);
+      // }
+      // await page.click('[data-test="save-and-continue-button"]');
+      // await page.waitForSelector('[id="checkout-spinner"]', {
+      //   hidden: true,
+      // });
+      // await page.waitForSelector('[data-test="placeOrderButton"]');
+      // await page.click('[data-test="placeOrderButton"]');
     }
 
-    await sleep(3000);
+    await sleep(4000);
     await browser.close();
     autoScan = false;
     io.emit('result', { msg: `${time}: Auto Checkout Successfully: ${url}` });
